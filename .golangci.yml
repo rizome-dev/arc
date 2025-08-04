@@ -75,7 +75,7 @@ linters-settings:
     sections:
       - standard
       - default
-      - prefix(github.com/rizome-dev/tmpl)
+      - prefix(github.com/rizome-dev/arc)
   
   goconst:
     min-len: 2
@@ -101,7 +101,7 @@ linters-settings:
     simplify: true
   
   goimports:
-    local-prefixes: github.com/rizome-dev/tmpl
+    local-prefixes: github.com/rizome-dev/arc
   
   gosec:
     excludes:

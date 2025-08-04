@@ -1,77 +1,130 @@
-# tmpl
+# ARC - Agentic Runtime Controller
 
-[![GoDoc](https://pkg.go.dev/badge/github.com/rizome-dev/tmpl)](https://pkg.go.dev/github.com/rizome-dev/tmpl)
-[![Go Report Card](https://goreportcard.com/badge/github.com/rizome-dev/tmpl)](https://goreportcard.com/report/github.com/rizome-dev/tmpl)
-[![CI](https://github.com/rizome-dev/tmpl/actions/workflows/ci.yml/badge.svg)](https://github.com/rizome-dev/tmpl/actions/workflows/ci.yml)
+[![GoDoc](https://pkg.go.dev/badge/github.com/rizome-dev/arc)](https://pkg.go.dev/github.com/rizome-dev/arc)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rizome-dev/arc)](https://goreportcard.com/report/github.com/rizome-dev/arc)
+[![CI](https://github.com/rizome-dev/arc/actions/workflows/ci.yml/badge.svg)](https://github.com/rizome-dev/arc/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A production-ready Go project template with CI/CD, testing, and build tooling.
+ARC is a production-ready agent orchestrator for building and managing Agentic Development Swarms. It provides a simple yet powerful framework for orchestrating container-based agents that communicate via message queues to execute complex workflows.
 
 built by [rizome labs](https://rizome.dev) | contact: [hi@rizome.dev](mailto:hi@rizome.dev)
 
+```bash
+go get github.com/rizome-dev/arc
+```
+
 ## Quick Start
 
-```bash
-# Use this template on GitHub
-# 1. Click "Use this template" button
-# 2. Create your new repository
-# 3. Clone your new repo
+```go
+package main
 
-# Bootstrap your project
-cd your-new-repo
-just bootstrap github.com/yourusername/yourproject cli
+import (
+    "context"
+    "log"
+    
+    "github.com/rizome-dev/arc/pkg/messagequeue"
+    "github.com/rizome-dev/arc/pkg/orchestrator"
+    "github.com/rizome-dev/arc/pkg/runtime"
+    "github.com/rizome-dev/arc/pkg/state"
+    "github.com/rizome-dev/arc/pkg/types"
+)
 
-# Set up development tools
-make setup
-
-# Build and test
-make build
-make test
+func main() {
+    ctx := context.Background()
+    
+    // Create Docker runtime
+    dockerRuntime, _ := runtime.NewDockerRuntime(runtime.Config{
+        Type: "docker",
+    })
+    
+    // Create message queue
+    mq, _ := messagequeue.NewAMQMessageQueue(messagequeue.Config{
+        StorePath:      "./arc-amq-data",
+        WorkerPoolSize: 10,
+        MessageTimeout: 300,
+    })
+    defer mq.Close()
+    
+    // Create state manager
+    stateManager := state.NewMemoryStore()
+    stateManager.Initialize(ctx)
+    defer stateManager.Close(ctx)
+    
+    // Create orchestrator
+    arc, _ := orchestrator.New(orchestrator.Config{
+        Runtime:      dockerRuntime,
+        MessageQueue: mq,
+        StateManager: stateManager,
+    })
+    
+    // Start orchestrator
+    arc.Start()
+    defer arc.Stop()
+    
+    // Create and execute workflow
+    workflow := &types.Workflow{
+        Name: "data-pipeline",
+        Tasks: []types.Task{
+            {
+                Name: "fetch-data",
+                AgentConfig: types.AgentConfig{
+                    Command: []string{"python"},
+                    Args:    []string{"fetch.py"},
+                },
+            },
+            {
+                Name:         "process-data",
+                Dependencies: []string{"fetch-data"},
+                AgentConfig: types.AgentConfig{
+                    Command: []string{"python"},
+                    Args:    []string{"process.py"},
+                },
+            },
+        },
+    }
+    
+    arc.CreateWorkflow(ctx, workflow)
+    arc.StartWorkflow(ctx, workflow.ID)
+}
 ```
-
-## Bootstrap Options
-
-```bash
-just bootstrap                                    # Uses defaults (CLI project)
-just bootstrap github.com/user/myproject          # Custom module name
-just bootstrap github.com/user/myproject library  # Library project
-just bootstrap github.com/user/myproject api      # API server project
-```
-
-Project types:
-- `cli` - Command-line application
-- `library` - Go library package
-- `api` - HTTP API server
-- `sharedlib` - Shared C library (.so/.dylib)
 
 ## Development
 
 ```bash
-# Install tools
-make setup
+# Install dependencies
+go mod download
+
+# Run tests
+go test ./...
 
 # Build
-make build
+go build ./...
 
-# Test
-make test
-
-# Lint
-make lint
-
-# All checks
-make ci
+# Run linter
+golangci-lint run
 ```
 
-## Features
+## Deployment
 
-- **Go 1.23.4** with modern project structure
-- **GitHub Actions** CI/CD pipeline
-- **golangci-lint** with comprehensive rules
-- **Multiple project types** supported
-- **Cross-platform builds** (Linux, macOS, Windows)
-- **Shared C library** support
-- **Docker** build support
+### Docker
+
+```bash
+# Build Docker image
+docker build -t arc:latest .
+
+# Run with Docker Compose
+docker-compose up
+```
+
+### Kubernetes
+
+```bash
+# Install with Helm
+helm install arc ./helm/arc
+
+# Configure values
+helm install arc ./helm/arc -f values.yaml
+```
 
 ## Contributing
 

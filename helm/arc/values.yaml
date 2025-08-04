@@ -1,0 +1,162 @@
+# Default values for arc.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/rizome-dev/arc
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: arc.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# ORC Configuration
+config:
+  # Runtime configuration
+  runtime:
+    type: kubernetes  # kubernetes or docker
+    namespace: ""     # Uses release namespace if empty
+    labels:
+      managed-by: arc
+  
+  # State storage configuration
+  state:
+    type: memory  # memory, badger, postgres
+    # For badger
+    path: /data/state
+    # For postgres
+    url: ""
+  
+  # Message queue configuration (if not using external AMQ)
+  messageQueue:
+    storePath: /data/amq
+    workerPoolSize: 10
+    messageTimeout: 300
+
+# AMQ dependency configuration
+amq:
+  enabled: true
+  replicaCount: 1
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+
+# Agent defaults
+agentDefaults:
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  
+  # Security context for agent pods
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+
+# RBAC configuration
+rbac:
+  create: true
+  # Additional rules for managing agent pods
+  rules:
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["create", "get", "list", "watch", "delete", "update", "patch"]
+    - apiGroups: [""]
+      resources: ["pods/log"]
+      verbs: ["get", "list"]
+    - apiGroups: [""]
+      resources: ["pods/exec"]
+      verbs: ["create"]
+
+# Persistence for state storage
+persistence:
+  enabled: true
+  accessMode: ReadWriteOnce
+  size: 5Gi
+  storageClass: ""
+  annotations: {}
+
+# Monitoring
+monitoring:
+  enabled: false
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    path: /metrics
+
+# PostgreSQL configuration (if using postgres state store)
+postgresql:
+  enabled: false
+  auth:
+    postgresPassword: ""
+    username: arc
+    password: ""
+    database: arc
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi

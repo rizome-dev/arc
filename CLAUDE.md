@@ -4,62 +4,68 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Go template library project (`github.com/rizome-dev/tmpl`) built by rizome labs. It serves as a production-ready template for starting new Go projects with proper structure, CI/CD, and build tooling.
+This is the ARC (Agent oRchestrator for Containers) project (`github.com/rizome-dev/arc`) built by rizome labs. It provides a production-ready orchestrator for managing container-based agents in Agentic Development Swarms.
+
+## Key Components
+
+- **Orchestrator**: Core engine managing agent lifecycle and workflow execution
+- **Runtime Interface**: Abstraction supporting Docker and Kubernetes
+- **Message Queue**: Integration with AMQ (github.com/rizome-dev/amq) for agent communication
+- **Workflow Engine**: DAG-based task execution with dependency management
+- **State Management**: Pluggable storage backends (memory, BadgerDB, PostgreSQL)
 
 ## Build Commands
 
-The project uses `just` for build tasks. Available commands:
-
 ```bash
-# Build for macOS (local)
-just build-darwin-local
+# Build the project
+make build
 
-# Build for Linux (local)
-just build-linux-local
+# Run tests
+make test
 
-# Build for Linux using Docker (ensures compatibility)
-just build-linux-docker
+# Run linter
+make lint
 
-# Bootstrap the current directory as a new project
-just bootstrap                                    # Uses defaults
-just bootstrap github.com/user/myproject          # Custom module name
-just bootstrap github.com/user/myproject sdk  # Custom module and type
+# Install development tools
+make setup
 ```
-
-### Bootstrap Command
-
-The `bootstrap` command initializes the current directory as a new Go project. It:
-- Creates a go.mod file with the specified module name
-- Sets up the project structure based on type (cli, sdk, sharedlib, api)
-- Updates all imports from the template to your module name
-- Creates minimal starter files for your project type
-- Does NOT manipulate go.mod beyond creation
-- Does NOT install dependencies (use `make setup` after bootstrap)
-
-Note: Run bootstrap from the root of your cloned template repository.
 
 ## Development Setup
 
 1. This is a Go 1.23.4 project
-2. After bootstrap, run `make setup` to install development tools
-3. Build outputs go to `./build/` directory
-4. Use `make build` for building, `make test` for testing
+2. Run `make setup` to install development tools
+3. Ensure Docker is running for Docker runtime support
+4. For Kubernetes support, ensure kubectl is configured
 
 ## Project Structure
 
-Standard Go project layout created by bootstrap:
-- `cmd/` - Main applications
-- `internal/` - Private application and library code  
-- `pkg/` - Library code for external use
-- `docs/` - Documentation
+- `pkg/orchestrator/` - Main orchestration engine
+- `pkg/runtime/` - Runtime implementations (Docker, Kubernetes)
+- `pkg/messagequeue/` - Message queue interfaces and AMQ integration
+- `pkg/state/` - State management implementations
+- `pkg/types/` - Core types (Agent, Workflow, Task, etc.)
+- `examples/` - Example usage
+- `helm/arc/` - Kubernetes Helm charts
 
 ## Testing
 
-Use standard Go testing practices with `go test` or `make test`.
+```bash
+# Run all tests
+make test
+
+# Run specific package tests
+go test ./pkg/orchestrator/...
+
+# Run with coverage
+go test -cover ./...
+```
 
 ## Important Notes
 
-- The template supports multiple project types: CLI, SDK, shared C library, and API server
-- Shared library projects can build .dylib (macOS) and .so (Linux) files for C interoperability
+- All agents run as containers (Docker or Kubernetes pods)
+- Agents communicate via the AMQ message queue
+- Workflows are defined as DAGs with task dependencies
+- The orchestrator supports both Docker and Kubernetes runtimes
+- Resource constraints (CPU, memory, GPU) are enforced by the runtime
 - Contact: hi@rizome.dev
-- Documentation: https://pkg.go.dev/github.com/rizome-dev/tmpl
+- Documentation: https://pkg.go.dev/github.com/rizome-dev/arc

@@ -1,0 +1,24 @@
+apiVersion: v2
+name: arc
+description: Agent Orchestrator for Agentic Development Swarms
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/rizome-dev/arc
+sources:
+  - https://github.com/rizome-dev/arc
+maintainers:
+  - name: Rizome Labs
+    email: hi@rizome.dev
+    url: https://rizome.dev
+keywords:
+  - orchestrator
+  - agent
+  - workflow
+  - kubernetes
+  - docker
+dependencies:
+  - name: amq
+    version: "0.1.0"
+    repository: "https://charts.rizome.dev"
+    condition: amq.enabled

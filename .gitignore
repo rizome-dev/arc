@@ -78,9 +78,9 @@ Thumbs.db
 desktop.ini
 
 # Project specific binaries
-/tmpl
-/tmpl_*
-tmpl-*
+/arc
+/arc_*
+arc-*
 
 # Shared library build artifacts
 *.h

@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "arc.fullname" . }}
+  labels:
+    {{- include "arc.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # ORC Configuration
+    runtime:
+      type: {{ .Values.config.runtime.type }}
+      namespace: {{ .Values.config.runtime.namespace | default .Release.Namespace }}
+      labels:
+        {{- toYaml .Values.config.runtime.labels | nindent 8 }}
+    
+    state:
+      type: {{ .Values.config.state.type }}
+      {{- if eq .Values.config.state.type "badger" }}
+      path: {{ .Values.config.state.path }}
+      {{- end }}
+    
+    messageQueue:
+      {{- if .Values.amq.enabled }}
+      type: amq
+      endpoint: "amq-{{ .Release.Name }}:9090"
+      {{- else }}
+      storePath: {{ .Values.config.messageQueue.storePath }}
+      workerPoolSize: {{ .Values.config.messageQueue.workerPoolSize }}
+      messageTimeout: {{ .Values.config.messageQueue.messageTimeout }}
+      {{- end }}
+    
+    agentDefaults:
+      resources:
+        {{- toYaml .Values.agentDefaults.resources | nindent 8 }}
+      securityContext:
+        {{- toYaml .Values.agentDefaults.securityContext | nindent 8 }}
