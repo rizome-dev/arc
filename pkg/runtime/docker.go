@@ -155,13 +155,19 @@ func (r *DockerRuntime) GetAgentStatus(ctx context.Context, agentID string) (*ar
         return nil, fmt.Errorf("failed to inspect container: %w", err)
     }
     
+    // Parse creation time from string to time.Time
+    createdAt, err := time.Parse(time.RFC3339Nano, inspect.Created)
+    if err != nil {
+        return nil, fmt.Errorf("failed to parse container creation time: %w", err)
+    }
+    
     agent := &arctypes.Agent{
         ID:          agentID,
         Name:        strings.TrimPrefix(inspect.Name, "/"),
         Image:       inspect.Config.Image,
         ContainerID: containerID,
         Labels:      inspect.Config.Labels,
-        CreatedAt:   inspect.Created,
+        CreatedAt:   createdAt,
     }
     
     // Map Docker state to agent status
@@ -170,7 +176,11 @@ func (r *DockerRuntime) GetAgentStatus(ctx context.Context, agentID string) (*ar
         agent.Status = arctypes.AgentStatusCreating
     case "running":
         agent.Status = arctypes.AgentStatusRunning
-        agent.StartedAt = &inspect.State.StartedAt
+        if inspect.State.StartedAt != "" {
+            if startedAt, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt); err == nil {
+                agent.StartedAt = &startedAt
+            }
+        }
     case "exited":
         if inspect.State.ExitCode == 0 {
             agent.Status = arctypes.AgentStatusCompleted
@@ -178,9 +188,16 @@ func (r *DockerRuntime) GetAgentStatus(ctx context.Context, agentID string) (*ar
             agent.Status = arctypes.AgentStatusFailed
             agent.Error = fmt.Sprintf("exit code: %d", inspect.State.ExitCode)
         }
-        agent.StartedAt = &inspect.State.StartedAt
-        finishedAt := inspect.State.FinishedAt
-        agent.CompletedAt = &finishedAt
+        if inspect.State.StartedAt != "" {
+            if startedAt, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt); err == nil {
+                agent.StartedAt = &startedAt
+            }
+        }
+        if inspect.State.FinishedAt != "" {
+            if finishedAt, err := time.Parse(time.RFC3339Nano, inspect.State.FinishedAt); err == nil {
+                agent.CompletedAt = &finishedAt
+            }
+        }
     case "dead", "removing":
         agent.Status = arctypes.AgentStatusTerminated
     default:

@@ -7,6 +7,8 @@ import (
     "testing"
     "time"
 
+    "github.com/rizome-dev/amq/pkg/client"
+    amqtypes "github.com/rizome-dev/amq/pkg/types"
     "github.com/rizome-dev/arc/pkg/messagequeue"
     "github.com/rizome-dev/arc/pkg/state"
     "github.com/rizome-dev/arc/pkg/types"
@@ -87,11 +89,11 @@ func NewMockMessageQueue() *MockMessageQueue {
     }
 }
 
-func (mq *MockMessageQueue) GetClient(agentID string, metadata map[string]string) (interface{}, error) {
+func (mq *MockMessageQueue) GetClient(agentID string, metadata map[string]string) (client.Client, error) {
     return nil, nil
 }
 
-func (mq *MockMessageQueue) GetAsyncConsumer(agentID string, metadata map[string]string) (interface{}, error) {
+func (mq *MockMessageQueue) GetAsyncConsumer(agentID string, metadata map[string]string) (client.AsyncConsumer, error) {
     return nil, nil
 }
 
@@ -113,11 +115,11 @@ func (mq *MockMessageQueue) PublishTask(ctx context.Context, from, topic string,
     return nil
 }
 
-func (mq *MockMessageQueue) GetQueueStats(ctx context.Context, queueName string) (interface{}, error) {
+func (mq *MockMessageQueue) GetQueueStats(ctx context.Context, queueName string) (*amqtypes.QueueStats, error) {
     return nil, nil
 }
 
-func (mq *MockMessageQueue) ListQueues(ctx context.Context) (interface{}, error) {
+func (mq *MockMessageQueue) ListQueues(ctx context.Context) ([]*amqtypes.Queue, error) {
     return nil, nil
 }
 

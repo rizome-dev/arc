@@ -3,8 +3,11 @@ package orchestrator
 
 import (
     "context"
+    "crypto/rand"
+    "encoding/hex"
     "fmt"
     "sync"
+    "sync/atomic"
     "time"
 
     "github.com/rizome-dev/arc/pkg/messagequeue"
@@ -541,6 +544,16 @@ func (o *Orchestrator) processEvents() {
     // This would listen to messages from agents and update task status
 }
 
+var idCounter uint64
+
 func generateID() string {
-    return fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Nanosecond())
+    // Generate a unique ID using timestamp + counter + random bytes
+    timestamp := time.Now().UnixNano()
+    counter := atomic.AddUint64(&idCounter, 1)
+    
+    // Add random bytes for additional uniqueness
+    randomBytes := make([]byte, 4)
+    rand.Read(randomBytes)
+    
+    return fmt.Sprintf("%d-%d-%s", timestamp, counter, hex.EncodeToString(randomBytes))
 }

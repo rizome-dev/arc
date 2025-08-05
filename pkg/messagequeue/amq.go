@@ -79,8 +79,8 @@ func (mq *AMQMessageQueue) GetAsyncConsumer(agentID string, metadata map[string]
 
 // CreateQueue creates a new queue/topic
 func (mq *AMQMessageQueue) CreateQueue(ctx context.Context, name string) error {
-    // Default to topic queue type for pub/sub pattern
-    return mq.amq.CreateQueue(ctx, name, types.QueueTypeTopic)
+    // Default to task queue type for pub/sub pattern
+    return mq.amq.CreateQueue(ctx, name, types.QueueTypeTask)
 }
 
 // DeleteQueue removes a queue/topic
