@@ -117,7 +117,7 @@ type Task struct {
     Status       TaskStatus        `json:"status"`
     Dependencies []string          `json:"dependencies,omitempty"` // Task IDs this depends on
     AgentConfig  AgentConfig       `json:"agent_config"`
-    Retries      int               `json:"retries,omitempty"`
+    RetryCount   int               `json:"retry_count,omitempty"`
     MaxRetries   int               `json:"max_retries,omitempty"`
     Timeout      time.Duration     `json:"timeout,omitempty"`
     StartedAt    *time.Time        `json:"started_at,omitempty"`
@@ -139,14 +139,21 @@ type Event struct {
 type EventType string
 
 const (
-    EventTypeAgentCreated    EventType = "agent.created"
-    EventTypeAgentStarted    EventType = "agent.started"
-    EventTypeAgentCompleted  EventType = "agent.completed"
-    EventTypeAgentFailed     EventType = "agent.failed"
-    EventTypeWorkflowStarted EventType = "workflow.started"
-    EventTypeWorkflowCompleted EventType = "workflow.completed"
-    EventTypeWorkflowFailed  EventType = "workflow.failed"
-    EventTypeTaskStarted     EventType = "task.started"
-    EventTypeTaskCompleted   EventType = "task.completed"
-    EventTypeTaskFailed      EventType = "task.failed"
+    EventTypeAgentCreated            EventType = "agent.created"
+    EventTypeAgentStarted            EventType = "agent.started"
+    EventTypeAgentCompleted          EventType = "agent.completed"
+    EventTypeAgentFailed             EventType = "agent.failed"
+    EventTypeAgentHealthChecked      EventType = "agent.health_checked"
+    EventTypeAgentHealthCheckFailed  EventType = "agent.health_check_failed"
+    EventTypeAgentStatusChanged      EventType = "agent.status_changed"
+    EventTypeWorkflowStarted         EventType = "workflow.started"
+    EventTypeWorkflowCompleted       EventType = "workflow.completed"
+    EventTypeWorkflowFailed          EventType = "workflow.failed"
+    EventTypeTaskStarted             EventType = "task.started"
+    EventTypeTaskCompleted           EventType = "task.completed"
+    EventTypeTaskFailed              EventType = "task.failed"
+    EventTypeTaskRetrying            EventType = "task.retrying"
+    EventTypeMessageReceived         EventType = "message.received"
+    EventTypeMessageProcessed        EventType = "message.processed"
+    EventTypeMessageFailed           EventType = "message.failed"
 )

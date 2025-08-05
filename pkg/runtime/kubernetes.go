@@ -13,18 +13,22 @@ import (
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
     "k8s.io/apimachinery/pkg/labels"
     "k8s.io/client-go/kubernetes"
+    "k8s.io/client-go/kubernetes/scheme"
     "k8s.io/client-go/rest"
     "k8s.io/client-go/tools/clientcmd"
+    "k8s.io/client-go/tools/remotecommand"
     "k8s.io/client-go/util/homedir"
     
     arctypes "github.com/rizome-dev/arc/pkg/types"
+    "github.com/rizome-dev/arc/pkg/validation"
 )
 
 // KubernetesRuntime implements Runtime interface for Kubernetes
 type KubernetesRuntime struct {
-    client    kubernetes.Interface
-    config    Config
-    namespace string
+    client         kubernetes.Interface
+    config         Config
+    namespace      string
+    imageValidator validation.ImageValidator
 }
 
 // NewKubernetesRuntime creates a new Kubernetes runtime
@@ -63,15 +67,56 @@ func NewKubernetesRuntime(config Config) (*KubernetesRuntime, error) {
         namespace = "default"
     }
     
+    // Initialize image validator if security is enabled
+    var imageValidator validation.ImageValidator
+    if config.EnableImageValidation {
+        validatorConfig := &validation.ValidationConfig{
+            AllowedRegistries:   config.AllowedRegistries,
+            BlockedRegistries:   config.BlockedRegistries,
+            RequireDigest:       config.RequireImageDigest,
+            EnableScanning:      config.EnableSecurityScan,
+            MaxCriticalCVEs:     0,
+            MaxHighCVEs:         config.MaxHighCVEs,
+            MaxMediumCVEs:       config.MaxMediumCVEs,
+            MaxLowCVEs:          -1, // No limit on low severity
+        }
+        imageValidator = validation.NewDefaultImageValidator(validatorConfig)
+    }
+    
     return &KubernetesRuntime{
-        client:    clientset,
-        config:    config,
-        namespace: namespace,
+        client:         clientset,
+        config:         config,
+        namespace:      namespace,
+        imageValidator: imageValidator,
     }, nil
 }
 
 // CreateAgent creates a new agent pod
 func (r *KubernetesRuntime) CreateAgent(ctx context.Context, agent *arctypes.Agent) error {
+    // Validate image if validator is configured
+    if r.imageValidator != nil {
+        if err := r.imageValidator.ValidateImage(ctx, agent.Image); err != nil {
+            return fmt.Errorf("image validation failed: %w", err)
+        }
+        
+        // Perform security scan if configured
+        if r.config.EnableSecurityScan {
+            scanResult, err := r.imageValidator.ScanImage(ctx, agent.Image)
+            if err != nil {
+                return fmt.Errorf("image security scan failed: %w", err)
+            }
+            
+            // Check if vulnerabilities exceed thresholds
+            if scanResult.CriticalCount > 0 && !r.config.AllowCriticalCVEs {
+                return fmt.Errorf("image contains %d critical vulnerabilities", scanResult.CriticalCount)
+            }
+            if scanResult.HighCount > r.config.MaxHighCVEs {
+                return fmt.Errorf("image contains %d high vulnerabilities (max allowed: %d)", 
+                    scanResult.HighCount, r.config.MaxHighCVEs)
+            }
+        }
+    }
+    
     pod := &corev1.Pod{
         ObjectMeta: metav1.ObjectMeta{
             Name:      fmt.Sprintf("arc-agent-%s", agent.ID),
@@ -283,9 +328,83 @@ func (r *KubernetesRuntime) StreamLogs(ctx context.Context, agentID string) (io.
 
 // ExecCommand executes a command in an agent pod
 func (r *KubernetesRuntime) ExecCommand(ctx context.Context, agentID string, cmd []string) (io.ReadCloser, error) {
-    // Note: Kubernetes exec requires more complex setup with SPDY
-    // This is a simplified version that would need enhancement for production
-    return nil, fmt.Errorf("exec not implemented for Kubernetes runtime")
+    podName := fmt.Sprintf("arc-agent-%s", agentID)
+    
+    // Build the exec request
+    req := r.client.CoreV1().RESTClient().Post().
+        Resource("pods").
+        Name(podName).
+        Namespace(r.namespace).
+        SubResource("exec").
+        VersionedParams(&corev1.PodExecOptions{
+            Container: "agent", // Default container name
+            Command:   cmd,
+            Stdin:     false,
+            Stdout:    true,
+            Stderr:    true,
+            TTY:       false,
+        }, scheme.ParameterCodec)
+    
+    // Get the config for the executor
+    config, err := r.getRestConfig()
+    if err != nil {
+        return nil, fmt.Errorf("failed to get REST config: %w", err)
+    }
+    
+    // Create the executor
+    executor, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+    if err != nil {
+        return nil, fmt.Errorf("failed to create executor: %w", err)
+    }
+    
+    // Create pipes for output
+    reader, writer := io.Pipe()
+    
+    // Execute the command in a goroutine
+    go func() {
+        defer writer.Close()
+        
+        // Stream the output
+        err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+            Stdout: writer,
+            Stderr: writer,
+            Tty:    false,
+        })
+        
+        if err != nil {
+            // Write error to the pipe
+            fmt.Fprintf(writer, "Execution error: %v\n", err)
+        }
+    }()
+    
+    return reader, nil
+}
+
+// getRestConfig returns the REST config used to create the client
+func (r *KubernetesRuntime) getRestConfig() (*rest.Config, error) {
+    // Try to reconstruct the config based on how the client was created
+    // In production, we should store this during initialization
+    var kubeConfig *rest.Config
+    var err error
+    
+    if r.config.KubeConfig != "" {
+        kubeConfig, err = clientcmd.BuildConfigFromFlags("", r.config.KubeConfig)
+    } else if r.config.Endpoint != "" {
+        kubeConfig, err = rest.InClusterConfig()
+    } else {
+        if home := homedir.HomeDir(); home != "" {
+            kubeconfigPath := filepath.Join(home, ".kube", "config")
+            kubeConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+        } else {
+            return nil, fmt.Errorf("no kubeconfig specified")
+        }
+    }
+    
+    if err != nil {
+        return nil, fmt.Errorf("failed to create Kubernetes config: %w", err)
+    }
+    
+    return kubeConfig, nil
 }
 
 // Helper functions

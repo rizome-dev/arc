@@ -15,12 +15,14 @@ import (
     "github.com/docker/docker/pkg/stdcopy"
     
     arctypes "github.com/rizome-dev/arc/pkg/types"
+    "github.com/rizome-dev/arc/pkg/validation"
 )
 
 // DockerRuntime implements Runtime interface for Docker
 type DockerRuntime struct {
-    client *client.Client
-    config Config
+    client         *client.Client
+    config         Config
+    imageValidator validation.ImageValidator
 }
 
 // NewDockerRuntime creates a new Docker runtime
@@ -39,14 +41,55 @@ func NewDockerRuntime(config Config) (*DockerRuntime, error) {
     // Negotiate API version
     cli.NegotiateAPIVersion(context.Background())
     
+    // Initialize image validator if security is enabled
+    var imageValidator validation.ImageValidator
+    if config.EnableImageValidation {
+        validatorConfig := &validation.ValidationConfig{
+            AllowedRegistries:   config.AllowedRegistries,
+            BlockedRegistries:   config.BlockedRegistries,
+            RequireDigest:       config.RequireImageDigest,
+            EnableScanning:      config.EnableSecurityScan,
+            MaxCriticalCVEs:     0,
+            MaxHighCVEs:         config.MaxHighCVEs,
+            MaxMediumCVEs:       config.MaxMediumCVEs,
+            MaxLowCVEs:          -1, // No limit on low severity
+        }
+        imageValidator = validation.NewDefaultImageValidator(validatorConfig)
+    }
+    
     return &DockerRuntime{
-        client: cli,
-        config: config,
+        client:         cli,
+        config:         config,
+        imageValidator: imageValidator,
     }, nil
 }
 
 // CreateAgent creates a new agent container
 func (r *DockerRuntime) CreateAgent(ctx context.Context, agent *arctypes.Agent) error {
+    // Validate image if validator is configured
+    if r.imageValidator != nil {
+        if err := r.imageValidator.ValidateImage(ctx, agent.Image); err != nil {
+            return fmt.Errorf("image validation failed: %w", err)
+        }
+        
+        // Perform security scan if configured
+        if r.config.EnableSecurityScan {
+            scanResult, err := r.imageValidator.ScanImage(ctx, agent.Image)
+            if err != nil {
+                return fmt.Errorf("image security scan failed: %w", err)
+            }
+            
+            // Check if vulnerabilities exceed thresholds
+            if scanResult.CriticalCount > 0 && !r.config.AllowCriticalCVEs {
+                return fmt.Errorf("image contains %d critical vulnerabilities", scanResult.CriticalCount)
+            }
+            if scanResult.HighCount > r.config.MaxHighCVEs {
+                return fmt.Errorf("image contains %d high vulnerabilities (max allowed: %d)", 
+                    scanResult.HighCount, r.config.MaxHighCVEs)
+            }
+        }
+    }
+    
     // Build container config
     containerConfig := &container.Config{
         Image:        agent.Image,

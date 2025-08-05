@@ -42,6 +42,20 @@ type Config struct {
     Namespace  string            // K8s namespace
     KubeConfig string            // Path to kubeconfig file
     Labels     map[string]string // Default labels for agents
+    
+    // Image validation and security settings
+    EnableImageValidation bool     // Enable image validation
+    EnableSecurityScan    bool     // Enable vulnerability scanning
+    AllowedRegistries     []string // List of allowed registries
+    BlockedRegistries     []string // List of blocked registries
+    RequireImageDigest    bool     // Require images to have digest
+    MaxImageAgeDays       int      // Maximum age of images in days
+    EnforceTrustedImages  bool     // Require signed images
+    
+    // CVE thresholds
+    AllowCriticalCVEs bool // Allow images with critical CVEs
+    MaxHighCVEs       int  // Maximum allowed high severity CVEs
+    MaxMediumCVEs     int  // Maximum allowed medium severity CVEs
 }
 
 // Factory creates runtime instances

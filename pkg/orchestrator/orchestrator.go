@@ -7,7 +7,6 @@ import (
     "encoding/hex"
     "fmt"
     "sync"
-    "sync/atomic"
     "time"
 
     "github.com/rizome-dev/arc/pkg/messagequeue"
@@ -69,7 +68,6 @@ func New(config Config) (*Orchestrator, error) {
 func (o *Orchestrator) Start() error {
     // Start monitoring goroutines
     go o.monitorAgents()
-    go o.processEvents()
     
     return nil
 }
@@ -535,25 +533,164 @@ func (o *Orchestrator) monitorAgents() {
 }
 
 func (o *Orchestrator) checkAgentHealth() {
-    // Implementation for monitoring agent health
-    // This would check all running agents and update their status
+    ctx := context.Background()
+    
+    // Get all running workflows
+    o.mu.RLock()
+    workflowsCopy := make(map[string]*workflowExecution)
+    for id, exec := range o.workflows {
+        workflowsCopy[id] = exec
+    }
+    o.mu.RUnlock()
+    
+    // Check health of all agents in running workflows
+    for workflowID, exec := range workflowsCopy {
+        for taskID, agent := range exec.agents {
+            // Skip if agent is not running
+            if agent.Status != types.AgentStatusRunning {
+                continue
+            }
+            
+            // Get current agent status from runtime
+            status, err := o.runtime.GetAgentStatus(ctx, agent.ID)
+            if err != nil {
+                // Log error and mark agent as unhealthy
+                event := &types.Event{
+                    ID:        generateID(),
+                    Type:      types.EventTypeAgentHealthCheckFailed,
+                    Source:    "orchestrator",
+                    Timestamp: time.Now(),
+                    Data: map[string]interface{}{
+                        "agent_id":    agent.ID,
+                        "workflow_id": workflowID,
+                        "task_id":     taskID,
+                        "error":       err.Error(),
+                    },
+                }
+                _ = o.stateManager.RecordEvent(ctx, event)
+                
+                // Mark agent as failed
+                agent.Status = types.AgentStatusFailed
+                agent.Error = fmt.Sprintf("health check failed: %v", err)
+                _ = o.stateManager.UpdateAgent(ctx, agent)
+                
+                // Update task status
+                task := o.findTask(exec.workflow, taskID)
+                if task != nil {
+                    task.Status = types.TaskStatusFailed
+                    task.Error = fmt.Sprintf("agent health check failed: %v", err)
+                    _ = o.stateManager.UpdateTask(ctx, workflowID, task)
+                }
+                continue
+            }
+            
+            // Check if status has changed
+            if status.Status != agent.Status {
+                previousStatus := agent.Status
+                agent.Status = status.Status
+                agent.Error = status.Error
+                
+                // Update agent in state
+                _ = o.stateManager.UpdateAgent(ctx, agent)
+                
+                // Record status change event
+                event := &types.Event{
+                    ID:        generateID(),
+                    Type:      types.EventTypeAgentStatusChanged,
+                    Source:    "orchestrator",
+                    Timestamp: time.Now(),
+                    Data: map[string]interface{}{
+                        "agent_id":        agent.ID,
+                        "workflow_id":     workflowID,
+                        "task_id":         taskID,
+                        "previous_status": previousStatus,
+                        "new_status":      status.Status,
+                    },
+                }
+                _ = o.stateManager.RecordEvent(ctx, event)
+                
+                // Handle status-specific actions
+                switch status.Status {
+                case types.AgentStatusFailed, types.AgentStatusTerminated:
+                    // Update task status
+                    task := o.findTask(exec.workflow, taskID)
+                    if task != nil {
+                        task.Status = types.TaskStatusFailed
+                        task.Error = status.Error
+                        task.CompletedAt = &[]time.Time{time.Now()}[0]
+                        _ = o.stateManager.UpdateTask(ctx, workflowID, task)
+                        
+                        // Check if task has retries remaining
+                        if task.RetryCount < task.MaxRetries {
+                            task.RetryCount++
+                            task.Status = types.TaskStatusPending
+                            task.Error = ""
+                            task.CompletedAt = nil
+                            _ = o.stateManager.UpdateTask(ctx, workflowID, task)
+                            
+                            // Record retry event
+                            retryEvent := &types.Event{
+                                ID:        generateID(),
+                                Type:      types.EventTypeTaskRetrying,
+                                Source:    "orchestrator",
+                                Timestamp: time.Now(),
+                                Data: map[string]interface{}{
+                                    "workflow_id":  workflowID,
+                                    "task_id":      taskID,
+                                    "retry_count":  task.RetryCount,
+                                    "max_retries":  task.MaxRetries,
+                                    "prev_error":   status.Error,
+                                },
+                            }
+                            _ = o.stateManager.RecordEvent(ctx, retryEvent)
+                            
+                            // Re-execute the task
+                            go func() {
+                                time.Sleep(5 * time.Second) // Back-off before retry
+                                _ = o.executeTask(ctx, exec, task)
+                            }()
+                        }
+                    }
+                    
+                case types.AgentStatusCompleted:
+                    // Update task status
+                    task := o.findTask(exec.workflow, taskID)
+                    if task != nil {
+                        task.Status = types.TaskStatusCompleted
+                        task.CompletedAt = status.CompletedAt
+                        _ = o.stateManager.UpdateTask(ctx, workflowID, task)
+                    }
+                }
+            }
+            
+            // Check for resource constraints violations
+            if agent.Config.Resources.CPU != "" || agent.Config.Resources.Memory != "" {
+                // This would require runtime-specific metrics collection
+                // For now, just record that we checked
+                event := &types.Event{
+                    ID:        generateID(),
+                    Type:      types.EventTypeAgentHealthChecked,
+                    Source:    "orchestrator",
+                    Timestamp: time.Now(),
+                    Data: map[string]interface{}{
+                        "agent_id":    agent.ID,
+                        "workflow_id": workflowID,
+                        "task_id":     taskID,
+                        "status":      status.Status,
+                    },
+                }
+                _ = o.stateManager.RecordEvent(ctx, event)
+            }
+        }
+    }
 }
 
-func (o *Orchestrator) processEvents() {
-    // Implementation for processing events from agents
-    // This would listen to messages from agents and update task status
-}
 
-var idCounter uint64
 
+// generateID generates a unique ID for events and other entities
 func generateID() string {
-    // Generate a unique ID using timestamp + counter + random bytes
-    timestamp := time.Now().UnixNano()
-    counter := atomic.AddUint64(&idCounter, 1)
-    
-    // Add random bytes for additional uniqueness
-    randomBytes := make([]byte, 4)
-    rand.Read(randomBytes)
-    
-    return fmt.Sprintf("%d-%d-%s", timestamp, counter, hex.EncodeToString(randomBytes))
+    // Generate a random 4-byte suffix to ensure uniqueness
+    b := make([]byte, 4)
+    rand.Read(b)
+    return fmt.Sprintf("%d-%s", time.Now().UnixNano(), hex.EncodeToString(b))
 }

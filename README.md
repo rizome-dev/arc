@@ -5,7 +5,7 @@
 [![CI](https://github.com/rizome-dev/arc/actions/workflows/ci.yml/badge.svg)](https://github.com/rizome-dev/arc/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-ARC is a production-ready agent orchestrator for building and managing Agentic Development Swarms. It provides a simple yet powerful framework for orchestrating container-based agents that communicate via message queues to execute complex workflows.
+ARC is a production-ready, unopinionated agent & workflow management system.
 
 built by [rizome labs](https://rizome.dev) | contact: [hi@rizome.dev](mailto:hi@rizome.dev)
 
@@ -88,52 +88,20 @@ func main() {
 }
 ```
 
-## Development
-
-```bash
-# Install dependencies
-go mod download
-
-# Run tests
-go test ./...
-
-# Build
-go build ./...
-
-# Run linter
-golangci-lint run
-```
-
 ## Deployment
-
-### Docker
-
-```bash
-# Build Docker image
-docker build -t arc:latest .
-
-# Run with Docker Compose
-docker-compose up
-```
 
 ### Kubernetes
 
 ```bash
-# Install with Helm
 helm install arc ./helm/arc
-
-# Configure values
+# or
 helm install arc ./helm/arc -f values.yaml
 ```
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
 
 ## License
 
 MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+Built with ❤️  by [Rizome Labs](https://rizome.dev)
