@@ -5,12 +5,14 @@ import (
     "context"
     "fmt"
     "io"
+    "os"
+    "path/filepath"
     "strings"
     "time"
 
-    "github.com/docker/docker/api/types"
     "github.com/docker/docker/api/types/container"
     "github.com/docker/docker/api/types/filters"
+    "github.com/docker/docker/api/types/image"
     "github.com/docker/docker/client"
     "github.com/docker/docker/pkg/stdcopy"
     
@@ -25,18 +27,100 @@ type DockerRuntime struct {
     imageValidator validation.ImageValidator
 }
 
+// detectDockerSocket finds an available Docker socket from common locations
+func detectDockerSocket() (string, []string) {
+    var checkedPaths []string
+    
+    // Check DOCKER_HOST environment variable first
+    if dockerHost := os.Getenv("DOCKER_HOST"); dockerHost != "" {
+        checkedPaths = append(checkedPaths, fmt.Sprintf("DOCKER_HOST=%s", dockerHost))
+        return dockerHost, checkedPaths
+    }
+    
+    // Common Docker socket locations to check
+    socketPaths := []string{
+        "/var/run/docker.sock",                              // Linux default
+        filepath.Join(os.Getenv("HOME"), ".docker/run/docker.sock"), // Docker Desktop on macOS
+        "/run/user/" + fmt.Sprint(os.Getuid()) + "/docker.sock",     // Rootless Docker on Linux
+        "/var/run/docker-desktop/docker.sock",               // Docker Desktop alternative
+        filepath.Join(os.Getenv("HOME"), ".colima/docker.sock"),     // Colima
+        filepath.Join(os.Getenv("HOME"), ".rd/docker.sock"),         // Rancher Desktop
+        "/var/run/podman/podman.sock",                       // Podman compatibility
+    }
+    
+    // Check each socket path
+    for _, socketPath := range socketPaths {
+        if socketPath == "" {
+            continue
+        }
+        
+        checkedPaths = append(checkedPaths, socketPath)
+        
+        // Check if the socket exists and is a socket file
+        if info, err := os.Stat(socketPath); err == nil {
+            if info.Mode()&os.ModeSocket != 0 {
+                return "unix://" + socketPath, checkedPaths
+            }
+        }
+    }
+    
+    // Return empty string if no socket found (will use Docker client defaults)
+    return "", checkedPaths
+}
+
 // NewDockerRuntime creates a new Docker runtime
 func NewDockerRuntime(config Config) (*DockerRuntime, error) {
     var clientOpts []client.Opt
+    var checkedPaths []string
     
+    // Use provided endpoint if available
     if config.Endpoint != "" {
         clientOpts = append(clientOpts, client.WithHost(config.Endpoint))
+        fmt.Fprintf(os.Stderr, "[ARC] Using configured Docker endpoint: %s\n", config.Endpoint)
+    } else {
+        // Auto-detect Docker socket location
+        detectedHost, paths := detectDockerSocket()
+        checkedPaths = paths
+        
+        if detectedHost != "" {
+            clientOpts = append(clientOpts, client.WithHost(detectedHost))
+            fmt.Fprintf(os.Stderr, "[ARC] Detected Docker socket: %s\n", detectedHost)
+        } else {
+            // Try Docker client defaults as fallback
+            fmt.Fprintf(os.Stderr, "[ARC] No Docker socket found, using Docker client defaults\n")
+            fmt.Fprintf(os.Stderr, "[ARC] Checked paths: %v\n", checkedPaths)
+        }
+    }
+    
+    // Allow override via ARC_DOCKER_HOST environment variable
+    if arcDockerHost := os.Getenv("ARC_DOCKER_HOST"); arcDockerHost != "" {
+        clientOpts = []client.Opt{client.WithHost(arcDockerHost)}
+        fmt.Fprintf(os.Stderr, "[ARC] Using ARC_DOCKER_HOST override: %s\n", arcDockerHost)
     }
     
     cli, err := client.NewClientWithOpts(clientOpts...)
     if err != nil {
         return nil, fmt.Errorf("failed to create Docker client: %w", err)
     }
+    
+    // Test connection and negotiate API version
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    
+    fmt.Fprintf(os.Stderr, "[ARC] Testing Docker connection...\n")
+    if _, err := cli.Ping(ctx); err != nil {
+        socketHint := ""
+        if config.Endpoint == "" {
+            socketHint = fmt.Sprintf("\n[ARC] Checked locations:\n")
+            for _, path := range checkedPaths {
+                socketHint += fmt.Sprintf("  - %s\n", path)
+            }
+            socketHint += "\n[ARC] To specify a custom Docker socket, set ARC_DOCKER_HOST or DOCKER_HOST environment variable"
+        }
+        return nil, fmt.Errorf("cannot connect to Docker daemon: %w%s\n\n[ARC] Troubleshooting steps:\n1. Ensure Docker Desktop is running\n2. Try restarting Docker Desktop\n3. Check Docker Desktop settings -> Advanced -> Allow the default Docker socket to be used\n4. Set ARC_DOCKER_HOST=unix:///path/to/docker.sock if using a custom location", err, socketHint)
+    }
+    
+    fmt.Fprintf(os.Stderr, "[ARC] Successfully connected to Docker daemon\n")
     
     // Negotiate API version
     cli.NegotiateAPIVersion(context.Background())
@@ -66,6 +150,54 @@ func NewDockerRuntime(config Config) (*DockerRuntime, error) {
 
 // CreateAgent creates a new agent container
 func (r *DockerRuntime) CreateAgent(ctx context.Context, agent *arctypes.Agent) error {
+    // Ensure image has a tag
+    imageName := agent.Image
+    if !strings.Contains(imageName, ":") {
+        imageName = imageName + ":latest"
+    }
+    agent.Image = imageName
+    
+    // Pull image if it doesn't exist locally
+    fmt.Fprintf(os.Stderr, "[ARC] Checking for image: %s\n", imageName)
+    
+    // Check if image exists locally
+    images, err := r.client.ImageList(ctx, image.ListOptions{})
+    if err != nil {
+        return fmt.Errorf("failed to list images: %w", err)
+    }
+    
+    imageExists := false
+    for _, img := range images {
+        for _, tag := range img.RepoTags {
+            if tag == imageName {
+                imageExists = true
+                break
+            }
+        }
+        if imageExists {
+            break
+        }
+    }
+    
+    // Pull image if it doesn't exist
+    if !imageExists {
+        fmt.Fprintf(os.Stderr, "[ARC] Pulling image: %s\n", imageName)
+        reader, err := r.client.ImagePull(ctx, imageName, image.PullOptions{})
+        if err != nil {
+            return fmt.Errorf("failed to pull image %s: %w", imageName, err)
+        }
+        defer reader.Close()
+        
+        // Read the output to ensure the pull completes
+        _, err = io.Copy(io.Discard, reader)
+        if err != nil {
+            return fmt.Errorf("failed to complete image pull for %s: %w", imageName, err)
+        }
+        fmt.Fprintf(os.Stderr, "[ARC] Successfully pulled image: %s\n", imageName)
+    } else {
+        fmt.Fprintf(os.Stderr, "[ARC] Image already exists locally: %s\n", imageName)
+    }
+    
     // Validate image if validator is configured
     if r.imageValidator != nil {
         if err := r.imageValidator.ValidateImage(ctx, agent.Image); err != nil {
@@ -96,7 +228,7 @@ func (r *DockerRuntime) CreateAgent(ctx context.Context, agent *arctypes.Agent) 
         Env:          r.buildEnvironment(agent),
         Cmd:          agent.Config.Args,
         WorkingDir:   agent.Config.WorkingDir,
-        Labels:       r.mergeLabels(agent.Labels),
+        Labels:       r.mergeLabels(agent),
         AttachStdout: true,
         AttachStderr: true,
     }
@@ -341,7 +473,7 @@ func (r *DockerRuntime) ExecCommand(ctx context.Context, agentID string, cmd []s
         return nil, err
     }
     
-    execConfig := types.ExecConfig{
+    execConfig := container.ExecOptions{
         Cmd:          cmd,
         AttachStdout: true,
         AttachStderr: true,
@@ -352,7 +484,7 @@ func (r *DockerRuntime) ExecCommand(ctx context.Context, agentID string, cmd []s
         return nil, fmt.Errorf("failed to create exec: %w", err)
     }
     
-    attachResp, err := r.client.ContainerExecAttach(ctx, execResp.ID, types.ExecStartCheck{})
+    attachResp, err := r.client.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
     if err != nil {
         return nil, fmt.Errorf("failed to attach to exec: %w", err)
     }
@@ -413,7 +545,7 @@ func (r *DockerRuntime) buildEnvironment(agent *arctypes.Agent) []string {
     return env
 }
 
-func (r *DockerRuntime) mergeLabels(agentLabels map[string]string) map[string]string {
+func (r *DockerRuntime) mergeLabels(agent *arctypes.Agent) map[string]string {
     labels := make(map[string]string)
     
     // Add default labels
@@ -422,20 +554,13 @@ func (r *DockerRuntime) mergeLabels(agentLabels map[string]string) map[string]st
     }
     
     // Add agent labels
-    for k, v := range agentLabels {
+    for k, v := range agent.Labels {
         labels[k] = v
     }
     
     // Add arc-specific labels
     labels["arc.managed"] = "true"
-    
-    // Extract agent ID from labels
-    for k, v := range agentLabels {
-        if k == "agent_id" || k == "arc.agent.id" {
-            labels["arc.agent.id"] = v
-            break
-        }
-    }
+    labels["arc.agent.id"] = agent.ID
     
     return labels
 }

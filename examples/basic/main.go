@@ -69,8 +69,9 @@ func main() {
             {
                 Name: "fetch-data",
                 AgentConfig: types.AgentConfig{
-                    Command: []string{"alpine"},
-                    Args:    []string{"sh", "-c", "echo 'Fetching data...'; sleep 5; echo 'Data fetched!'"},
+                    Image:   "alpine:latest",
+                    Command: []string{"sh"},
+                    Args:    []string{"-c", "echo 'Fetching data...'; sleep 5; echo 'Data fetched!'"},
                     Environment: map[string]string{
                         "TASK_TYPE": "fetch",
                     },
@@ -87,8 +88,9 @@ func main() {
                 Name:         "process-data",
                 Dependencies: []string{}, // Will be set after task IDs are generated
                 AgentConfig: types.AgentConfig{
-                    Command: []string{"alpine"},
-                    Args:    []string{"sh", "-c", "echo 'Processing data...'; sleep 10; echo 'Data processed!'"},
+                    Image:   "alpine:latest",
+                    Command: []string{"sh"},
+                    Args:    []string{"-c", "echo 'Processing data...'; sleep 10; echo 'Data processed!'"},
                     Environment: map[string]string{
                         "TASK_TYPE": "process",
                     },
@@ -105,8 +107,9 @@ func main() {
                 Name:         "store-results",
                 Dependencies: []string{}, // Will be set after task IDs are generated
                 AgentConfig: types.AgentConfig{
-                    Command: []string{"alpine"},
-                    Args:    []string{"sh", "-c", "echo 'Storing results...'; sleep 3; echo 'Results stored!'"},
+                    Image:   "alpine:latest",
+                    Command: []string{"sh"},
+                    Args:    []string{"-c", "echo 'Storing results...'; sleep 3; echo 'Results stored!'"},
                     Environment: map[string]string{
                         "TASK_TYPE": "store",
                     },

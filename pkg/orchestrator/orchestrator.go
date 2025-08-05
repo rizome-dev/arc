@@ -313,7 +313,7 @@ func (o *Orchestrator) executeTask(ctx context.Context, exec *workflowExecution,
     agent := &types.Agent{
         ID:        generateID(),
         Name:      fmt.Sprintf("%s-%s", exec.workflow.Name, task.Name),
-        Image:     task.AgentConfig.Command[0], // Assuming image is in command[0]
+        Image:     task.AgentConfig.Image,
         Status:    types.AgentStatusPending,
         Config:    task.AgentConfig,
         CreatedAt: time.Now(),

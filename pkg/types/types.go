@@ -43,6 +43,7 @@ type Agent struct {
 
 // AgentConfig holds configuration for an agent
 type AgentConfig struct {
+    Image        string              `json:"image"`
     Environment  map[string]string   `json:"environment,omitempty"`
     Command      []string            `json:"command,omitempty"`
     Args         []string            `json:"args,omitempty"`
