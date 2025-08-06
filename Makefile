@@ -14,6 +14,11 @@ BINARY_UNIX=$(BINARY_NAME)_unix
 BUILD_DIR=./build
 COVERAGE_DIR=./coverage
 
+# Protobuf variables
+PROTO_DIR=./api/v1
+THIRD_PARTY_DIR=./third_party
+PROTO_FILES=$(wildcard $(PROTO_DIR)/*.proto)
+
 # Shared library names
 SHAREDLIB_DARWIN_ARM64=signer-arm64.dylib
 SHAREDLIB_LINUX_AMD64=signer-amd64.so
@@ -30,7 +35,7 @@ BUILD_DATE=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Build flags
 LDFLAGS=-ldflags "-X main.Version=$(GIT_TAG) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildDate=$(BUILD_DATE)"
 
-.PHONY: all build clean test coverage lint fmt vet vendor help sharedlib-darwin sharedlib-linux sharedlib-all setup
+.PHONY: all build clean test coverage lint fmt vet vendor help sharedlib-darwin sharedlib-linux sharedlib-all setup proto proto-clean proto-install server server-build server-run
 
 # Default target
 all: test build
@@ -50,6 +55,61 @@ setup:
 	@$(GOCMD) install golang.org/x/tools/cmd/goimports@latest
 	@$(GOCMD) install github.com/securego/gosec/v2/cmd/gosec@latest
 	@echo "Setup complete!"
+
+## proto-install: Install protobuf tools
+proto-install:
+	@echo "Installing protobuf tools..."
+	@$(GOCMD) install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+	@$(GOCMD) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+	@$(GOCMD) install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@latest
+	@$(GOCMD) install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
+	@echo "Protobuf tools installed!"
+
+## proto: Generate Go code from protobuf definitions
+proto:
+	@echo "Generating protobuf code..."
+	@mkdir -p $(THIRD_PARTY_DIR)/googleapis/google/api
+	@if [ ! -f $(THIRD_PARTY_DIR)/googleapis/google/api/annotations.proto ]; then \
+		curl -L https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/annotations.proto \
+		-o $(THIRD_PARTY_DIR)/googleapis/google/api/annotations.proto; \
+	fi
+	@if [ ! -f $(THIRD_PARTY_DIR)/googleapis/google/api/http.proto ]; then \
+		curl -L https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/http.proto \
+		-o $(THIRD_PARTY_DIR)/googleapis/google/api/http.proto; \
+	fi
+	@protoc \
+		-I $(PROTO_DIR) \
+		-I $(THIRD_PARTY_DIR)/googleapis \
+		--go_out=$(PROTO_DIR) \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=$(PROTO_DIR) \
+		--go-grpc_opt=paths=source_relative \
+		--grpc-gateway_out=$(PROTO_DIR) \
+		--grpc-gateway_opt=paths=source_relative \
+		$(PROTO_FILES)
+	@echo "Protobuf code generated!"
+
+## proto-clean: Clean generated protobuf files
+proto-clean:
+	@echo "Cleaning generated protobuf files..."
+	@rm -f $(PROTO_DIR)/*.pb.go
+	@rm -f $(PROTO_DIR)/*.pb.gw.go
+	@rm -f $(BUILD_DIR)/*.swagger.json
+	@rm -rf $(THIRD_PARTY_DIR)
+
+## server-build: Build the gRPC/HTTP server
+server-build: proto vendor
+	@echo "Building ARC server..."
+	@mkdir -p $(BUILD_DIR)
+	@$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/arc-server -v ./cmd/server/
+
+## server-run: Run the gRPC/HTTP server
+server-run: server-build
+	@echo "Starting ARC server..."
+	@$(BUILD_DIR)/arc-server
+
+## server: Generate protobuf, build and run server
+server: proto server-build server-run
 
 ## build: Build the binary
 build: vendor

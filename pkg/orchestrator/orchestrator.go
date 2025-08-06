@@ -6,9 +6,12 @@ import (
     "crypto/rand"
     "encoding/hex"
     "fmt"
+    "log"
     "sync"
     "time"
 
+    "github.com/rizome-dev/amq/pkg/client"
+    amqTypes "github.com/rizome-dev/amq/pkg/types"
     "github.com/rizome-dev/arc/pkg/messagequeue"
     "github.com/rizome-dev/arc/pkg/runtime"
     "github.com/rizome-dev/arc/pkg/state"
@@ -21,7 +24,10 @@ type Orchestrator struct {
     messageQueue messagequeue.MessageQueue
     stateManager state.StateManager
     workflows    map[string]*workflowExecution
+    realTimeAgents map[string]*realTimeAgentExecution
+    externalMessageQueues map[string]messagequeue.MessageQueue
     mu           sync.RWMutex
+    rtaMu        sync.RWMutex // separate mutex for real-time agents
     ctx          context.Context
     cancel       context.CancelFunc
 }
@@ -31,6 +37,34 @@ type workflowExecution struct {
     workflow *types.Workflow
     agents   map[string]*types.Agent // task ID -> agent
     cancel   context.CancelFunc
+}
+
+// realTimeAgentExecution tracks a standalone real-time agent
+type realTimeAgentExecution struct {
+    agent     *types.Agent
+    consumer  client.AsyncConsumer
+    messageHandler messagequeue.MessageHandler
+    topics    []string
+    status    types.AgentStatus
+    ctx       context.Context
+    cancel    context.CancelFunc
+    paused    bool
+    mu        sync.RWMutex
+}
+
+// RealTimeAgentConfig holds configuration for real-time agents
+type RealTimeAgentConfig struct {
+    Agent          *types.Agent
+    Topics         []string
+    MessageHandler messagequeue.MessageHandler
+    ExternalAMQ    *ExternalAMQConfig // for external AMQ instances
+}
+
+// ExternalAMQConfig holds configuration for external AMQ instances
+type ExternalAMQConfig struct {
+    Name      string
+    Endpoints []string
+    Config    messagequeue.Config
 }
 
 // Config holds orchestrator configuration
@@ -59,6 +93,8 @@ func New(config Config) (*Orchestrator, error) {
         messageQueue: config.MessageQueue,
         stateManager: config.StateManager,
         workflows:    make(map[string]*workflowExecution),
+        realTimeAgents: make(map[string]*realTimeAgentExecution),
+        externalMessageQueues: make(map[string]messagequeue.MessageQueue),
         ctx:          ctx,
         cancel:       cancel,
     }, nil
@@ -68,6 +104,7 @@ func New(config Config) (*Orchestrator, error) {
 func (o *Orchestrator) Start() error {
     // Start monitoring goroutines
     go o.monitorAgents()
+    go o.monitorRealTimeAgents()
     
     return nil
 }
@@ -78,10 +115,24 @@ func (o *Orchestrator) Stop() error {
     
     // Stop all running workflows
     o.mu.Lock()
-    defer o.mu.Unlock()
-    
     for _, exec := range o.workflows {
         exec.cancel()
+    }
+    o.mu.Unlock()
+    
+    // Stop all real-time agents
+    o.rtaMu.Lock()
+    for _, rtaExec := range o.realTimeAgents {
+        rtaExec.cancel()
+        if rtaExec.consumer != nil {
+            _ = rtaExec.consumer.Stop()
+        }
+    }
+    o.rtaMu.Unlock()
+    
+    // Close external message queues
+    for _, mq := range o.externalMessageQueues {
+        _ = mq.Close()
     }
     
     return o.messageQueue.Close()
@@ -204,6 +255,396 @@ func (o *Orchestrator) GetWorkflow(ctx context.Context, workflowID string) (*typ
 // ListWorkflows returns all workflows
 func (o *Orchestrator) ListWorkflows(ctx context.Context, filter map[string]string) ([]*types.Workflow, error) {
     return o.stateManager.ListWorkflows(ctx, filter)
+}
+
+// CreateRealTimeAgent creates a standalone real-time agent
+func (o *Orchestrator) CreateRealTimeAgent(ctx context.Context, config RealTimeAgentConfig) error {
+    if config.Agent == nil {
+        return fmt.Errorf("agent configuration is required")
+    }
+    
+    if config.Agent.ID == "" {
+        config.Agent.ID = generateID()
+    }
+    
+    if len(config.Topics) == 0 {
+        return fmt.Errorf("at least one topic must be specified")
+    }
+    
+    if config.MessageHandler == nil {
+        return fmt.Errorf("message handler is required")
+    }
+    
+    // Set agent status and timestamps
+    config.Agent.Status = types.AgentStatusPending
+    config.Agent.CreatedAt = time.Now()
+    
+    // Set default labels
+    if config.Agent.Labels == nil {
+        config.Agent.Labels = make(map[string]string)
+    }
+    config.Agent.Labels["type"] = "realtime"
+    config.Agent.Labels["orchestrator"] = "arc"
+    
+    // Store agent
+    if err := o.stateManager.CreateAgent(ctx, config.Agent); err != nil {
+        return fmt.Errorf("failed to create agent: %w", err)
+    }
+    
+    // Record agent creation event
+    event := &types.Event{
+        ID:        generateID(),
+        Type:      types.EventTypeAgentCreated,
+        Source:    "orchestrator",
+        Timestamp: time.Now(),
+        Data: map[string]interface{}{
+            "agent_id": config.Agent.ID,
+            "name":     config.Agent.Name,
+            "topics":   config.Topics,
+            "type":     "realtime",
+        },
+    }
+    
+    if err := o.stateManager.RecordEvent(ctx, event); err != nil {
+        log.Printf("Failed to record agent creation event: %v", err)
+    }
+    
+    // Register external AMQ if provided
+    if config.ExternalAMQ != nil {
+        if err := o.registerExternalAMQ(config.ExternalAMQ); err != nil {
+            return fmt.Errorf("failed to register external AMQ: %w", err)
+        }
+    }
+    
+    execCtx, cancel := context.WithCancel(o.ctx)
+    rtaExec := &realTimeAgentExecution{
+        agent:          config.Agent,
+        messageHandler: config.MessageHandler,
+        topics:         config.Topics,
+        status:         types.AgentStatusPending,
+        ctx:            execCtx,
+        cancel:         cancel,
+        paused:         false,
+    }
+    
+    o.rtaMu.Lock()
+    o.realTimeAgents[config.Agent.ID] = rtaExec
+    o.rtaMu.Unlock()
+    
+    return nil
+}
+
+// StartRealTimeAgent starts a real-time agent to listen for messages
+func (o *Orchestrator) StartRealTimeAgent(ctx context.Context, agentID string) error {
+    o.rtaMu.Lock()
+    rtaExec, exists := o.realTimeAgents[agentID]
+    if !exists {
+        o.rtaMu.Unlock()
+        return fmt.Errorf("real-time agent not found: %s", agentID)
+    }
+    o.rtaMu.Unlock()
+    
+    rtaExec.mu.Lock()
+    defer rtaExec.mu.Unlock()
+    
+    if rtaExec.status == types.AgentStatusRunning {
+        return fmt.Errorf("agent is already running")
+    }
+    
+    // Create the agent container
+    if err := o.runtime.CreateAgent(ctx, rtaExec.agent); err != nil {
+        rtaExec.status = types.AgentStatusFailed
+        rtaExec.agent.Status = types.AgentStatusFailed
+        rtaExec.agent.Error = err.Error()
+        _ = o.stateManager.UpdateAgent(ctx, rtaExec.agent)
+        return fmt.Errorf("failed to create agent container: %w", err)
+    }
+    
+    // Start the agent container
+    if err := o.runtime.StartAgent(ctx, rtaExec.agent.ID); err != nil {
+        rtaExec.status = types.AgentStatusFailed
+        rtaExec.agent.Status = types.AgentStatusFailed
+        rtaExec.agent.Error = err.Error()
+        _ = o.stateManager.UpdateAgent(ctx, rtaExec.agent)
+        return fmt.Errorf("failed to start agent container: %w", err)
+    }
+    
+    // Determine which message queue to use
+    var mq messagequeue.MessageQueue = o.messageQueue
+    if rtaExec.agent.Config.MessageQueue.Brokers != nil && len(rtaExec.agent.Config.MessageQueue.Brokers) > 0 {
+        // Use external AMQ if brokers are specified
+        externalName := fmt.Sprintf("external-%s", rtaExec.agent.ID)
+        if externalMQ, exists := o.externalMessageQueues[externalName]; exists {
+            mq = externalMQ
+        }
+    }
+    
+    // Create async consumer for the agent
+    metadata := map[string]string{
+        "agent_id":   rtaExec.agent.ID,
+        "agent_name": rtaExec.agent.Name,
+        "type":       "realtime",
+    }
+    
+    consumer, err := mq.GetAsyncConsumer(rtaExec.agent.ID, metadata)
+    if err != nil {
+        rtaExec.status = types.AgentStatusFailed
+        rtaExec.agent.Status = types.AgentStatusFailed
+        rtaExec.agent.Error = err.Error()
+        _ = o.stateManager.UpdateAgent(ctx, rtaExec.agent)
+        return fmt.Errorf("failed to create consumer: %w", err)
+    }
+    
+    rtaExec.consumer = consumer
+    
+    // Subscribe to topics
+    if err := consumer.Subscribe(ctx, rtaExec.topics...); err != nil {
+        rtaExec.status = types.AgentStatusFailed
+        rtaExec.agent.Status = types.AgentStatusFailed
+        rtaExec.agent.Error = fmt.Sprintf("failed to subscribe to topics %v: %v", rtaExec.topics, err)
+        _ = o.stateManager.UpdateAgent(ctx, rtaExec.agent)
+        _ = consumer.Stop()
+        return err
+    }
+    
+    // Update agent status
+    now := time.Now()
+    rtaExec.status = types.AgentStatusRunning
+    rtaExec.agent.Status = types.AgentStatusRunning
+    rtaExec.agent.StartedAt = &now
+    
+    if err := o.stateManager.UpdateAgent(ctx, rtaExec.agent); err != nil {
+        log.Printf("Failed to update agent status: %v", err)
+    }
+    
+    // Start async message consumption
+    consumerOpts := client.ConsumerOptions{
+        MaxConcurrency: 5,
+        BatchSize:      10,
+        AutoAck:        true,
+    }
+    
+    if err := consumer.Start(o.createMessageHandlerWrapper(rtaExec), consumerOpts); err != nil {
+        rtaExec.status = types.AgentStatusFailed
+        rtaExec.agent.Status = types.AgentStatusFailed
+        rtaExec.agent.Error = fmt.Sprintf("failed to start consumer: %v", err)
+        _ = o.stateManager.UpdateAgent(ctx, rtaExec.agent)
+        _ = consumer.Stop()
+        return err
+    }
+    
+    // Record agent start event
+    event := &types.Event{
+        ID:        generateID(),
+        Type:      types.EventTypeAgentStarted,
+        Source:    "orchestrator",
+        Timestamp: time.Now(),
+        Data: map[string]interface{}{
+            "agent_id": rtaExec.agent.ID,
+            "topics":   rtaExec.topics,
+        },
+    }
+    
+    if err := o.stateManager.RecordEvent(ctx, event); err != nil {
+        log.Printf("Failed to record agent start event: %v", err)
+    }
+    
+    return nil
+}
+
+// StopRealTimeAgent stops a real-time agent
+func (o *Orchestrator) StopRealTimeAgent(ctx context.Context, agentID string) error {
+    o.rtaMu.Lock()
+    rtaExec, exists := o.realTimeAgents[agentID]
+    if !exists {
+        o.rtaMu.Unlock()
+        return fmt.Errorf("real-time agent not found: %s", agentID)
+    }
+    o.rtaMu.Unlock()
+    
+    rtaExec.mu.Lock()
+    defer rtaExec.mu.Unlock()
+    
+    if rtaExec.status != types.AgentStatusRunning {
+        return fmt.Errorf("agent is not running")
+    }
+    
+    // Cancel the context to stop message processing
+    rtaExec.cancel()
+    
+    // Stop consumer
+    if rtaExec.consumer != nil {
+        if err := rtaExec.consumer.Stop(); err != nil {
+            log.Printf("Failed to stop consumer for agent %s: %v", agentID, err)
+        }
+    }
+    
+    // Stop the agent container
+    if err := o.runtime.StopAgent(ctx, agentID); err != nil {
+        log.Printf("Failed to stop agent container %s: %v", agentID, err)
+    }
+    
+    // Update agent status
+    now := time.Now()
+    rtaExec.status = types.AgentStatusTerminated
+    rtaExec.agent.Status = types.AgentStatusTerminated
+    rtaExec.agent.CompletedAt = &now
+    
+    if err := o.stateManager.UpdateAgent(ctx, rtaExec.agent); err != nil {
+        log.Printf("Failed to update agent status: %v", err)
+    }
+    
+    // Record agent stop event
+    event := &types.Event{
+        ID:        generateID(),
+        Type:      "agent.stopped",
+        Source:    "orchestrator",
+        Timestamp: time.Now(),
+        Data: map[string]interface{}{
+            "agent_id": agentID,
+        },
+    }
+    
+    if err := o.stateManager.RecordEvent(ctx, event); err != nil {
+        log.Printf("Failed to record agent stop event: %v", err)
+    }
+    
+    return nil
+}
+
+// PauseRealTimeAgent pauses message processing for a real-time agent
+func (o *Orchestrator) PauseRealTimeAgent(ctx context.Context, agentID string) error {
+    o.rtaMu.RLock()
+    rtaExec, exists := o.realTimeAgents[agentID]
+    if !exists {
+        o.rtaMu.RUnlock()
+        return fmt.Errorf("real-time agent not found: %s", agentID)
+    }
+    o.rtaMu.RUnlock()
+    
+    rtaExec.mu.Lock()
+    defer rtaExec.mu.Unlock()
+    
+    if rtaExec.status != types.AgentStatusRunning {
+        return fmt.Errorf("agent is not running")
+    }
+    
+    rtaExec.paused = true
+    
+    // Record pause event
+    event := &types.Event{
+        ID:        generateID(),
+        Type:      "agent.paused",
+        Source:    "orchestrator",
+        Timestamp: time.Now(),
+        Data: map[string]interface{}{
+            "agent_id": agentID,
+        },
+    }
+    
+    if err := o.stateManager.RecordEvent(ctx, event); err != nil {
+        log.Printf("Failed to record agent pause event: %v", err)
+    }
+    
+    return nil
+}
+
+// ResumeRealTimeAgent resumes message processing for a real-time agent
+func (o *Orchestrator) ResumeRealTimeAgent(ctx context.Context, agentID string) error {
+    o.rtaMu.RLock()
+    rtaExec, exists := o.realTimeAgents[agentID]
+    if !exists {
+        o.rtaMu.RUnlock()
+        return fmt.Errorf("real-time agent not found: %s", agentID)
+    }
+    o.rtaMu.RUnlock()
+    
+    rtaExec.mu.Lock()
+    defer rtaExec.mu.Unlock()
+    
+    if rtaExec.status != types.AgentStatusRunning {
+        return fmt.Errorf("agent is not running")
+    }
+    
+    rtaExec.paused = false
+    
+    // Record resume event
+    event := &types.Event{
+        ID:        generateID(),
+        Type:      "agent.resumed",
+        Source:    "orchestrator",
+        Timestamp: time.Now(),
+        Data: map[string]interface{}{
+            "agent_id": agentID,
+        },
+    }
+    
+    if err := o.stateManager.RecordEvent(ctx, event); err != nil {
+        log.Printf("Failed to record agent resume event: %v", err)
+    }
+    
+    return nil
+}
+
+// GetRealTimeAgent returns information about a real-time agent
+func (o *Orchestrator) GetRealTimeAgent(ctx context.Context, agentID string) (*types.Agent, error) {
+    o.rtaMu.RLock()
+    rtaExec, exists := o.realTimeAgents[agentID]
+    if !exists {
+        o.rtaMu.RUnlock()
+        return nil, fmt.Errorf("real-time agent not found: %s", agentID)
+    }
+    o.rtaMu.RUnlock()
+    
+    // Return a copy to prevent external modifications
+    agent := *rtaExec.agent
+    return &agent, nil
+}
+
+// ListRealTimeAgents returns all real-time agents
+func (o *Orchestrator) ListRealTimeAgents(ctx context.Context) ([]*types.Agent, error) {
+    o.rtaMu.RLock()
+    defer o.rtaMu.RUnlock()
+    
+    agents := make([]*types.Agent, 0, len(o.realTimeAgents))
+    for _, rtaExec := range o.realTimeAgents {
+        // Return copies to prevent external modifications
+        agent := *rtaExec.agent
+        agents = append(agents, &agent)
+    }
+    
+    return agents, nil
+}
+
+// SendMessageToRealTimeAgent sends a message directly to a real-time agent
+func (o *Orchestrator) SendMessageToRealTimeAgent(ctx context.Context, agentID string, message *messagequeue.Message) error {
+    o.rtaMu.RLock()
+    rtaExec, exists := o.realTimeAgents[agentID]
+    if !exists {
+        o.rtaMu.RUnlock()
+        return fmt.Errorf("real-time agent not found: %s", agentID)
+    }
+    o.rtaMu.RUnlock()
+    
+    if rtaExec.status != types.AgentStatusRunning {
+        return fmt.Errorf("agent is not running")
+    }
+    
+    // Determine which message queue to use
+    var mq messagequeue.MessageQueue = o.messageQueue
+    if rtaExec.agent.Config.MessageQueue.Brokers != nil && len(rtaExec.agent.Config.MessageQueue.Brokers) > 0 {
+        externalName := fmt.Sprintf("external-%s", rtaExec.agent.ID)
+        if externalMQ, exists := o.externalMessageQueues[externalName]; exists {
+            mq = externalMQ
+        }
+    }
+    
+    return mq.SendMessage(ctx, "orchestrator", agentID, message)
+}
+
+// RegisterExternalAMQ registers an external AMQ instance
+func (o *Orchestrator) RegisterExternalAMQ(config *ExternalAMQConfig) error {
+    return o.registerExternalAMQ(config)
 }
 
 // executeWorkflow executes a workflow
@@ -686,6 +1127,227 @@ func (o *Orchestrator) checkAgentHealth() {
 }
 
 
+
+// Real-time agent helper methods
+
+// registerExternalAMQ registers an external AMQ instance
+func (o *Orchestrator) registerExternalAMQ(config *ExternalAMQConfig) error {
+    if config == nil {
+        return fmt.Errorf("external AMQ config is required")
+    }
+    
+    if config.Name == "" {
+        return fmt.Errorf("external AMQ name is required")
+    }
+    
+    if len(config.Endpoints) == 0 {
+        return fmt.Errorf("at least one endpoint must be specified")
+    }
+    
+    // Create external AMQ instance
+    // For now, we use the same AMQ implementation but with different configuration
+    externalAMQ, err := messagequeue.NewAMQMessageQueue(config.Config)
+    if err != nil {
+        return fmt.Errorf("failed to create external AMQ instance: %w", err)
+    }
+    
+    o.externalMessageQueues[config.Name] = externalAMQ
+    
+    log.Printf("Registered external AMQ: %s with endpoints: %v", config.Name, config.Endpoints)
+    return nil
+}
+
+// createMessageHandlerWrapper creates a wrapper for the AMQ AsyncConsumer that handles our message format
+func (o *Orchestrator) createMessageHandlerWrapper(rtaExec *realTimeAgentExecution) client.MessageHandler {
+    return func(ctx context.Context, amqMsg *amqTypes.Message) error {
+        // Check if agent is paused
+        rtaExec.mu.RLock()
+        paused := rtaExec.paused
+        rtaExec.mu.RUnlock()
+        
+        if paused {
+            // Return error to not acknowledge message when paused
+            return fmt.Errorf("agent is paused")
+        }
+        
+        // Convert AMQ message to our message format
+        arcMessage, err := messagequeue.PayloadToMessage(amqMsg.Payload)
+        if err != nil {
+            log.Printf("Failed to parse message for agent %s: %v", rtaExec.agent.ID, err)
+            return err
+        }
+        
+        // Record message received event
+        event := &types.Event{
+            ID:        generateID(),
+            Type:      types.EventTypeMessageReceived,
+            Source:    "orchestrator",
+            Timestamp: time.Now(),
+            Data: map[string]interface{}{
+                "agent_id":   rtaExec.agent.ID,
+                "message_id": arcMessage.ID,
+                "topic":      arcMessage.Topic,
+                "from":       arcMessage.From,
+            },
+        }
+        _ = o.stateManager.RecordEvent(ctx, event)
+        
+        // Handle the message with timing
+        startTime := time.Now()
+        err = rtaExec.messageHandler(ctx, arcMessage)
+        
+        // Record processing result
+        var eventType types.EventType
+        eventData := map[string]interface{}{
+            "agent_id":      rtaExec.agent.ID,
+            "message_id":    arcMessage.ID,
+            "topic":         arcMessage.Topic,
+            "from":          arcMessage.From,
+            "processing_ms": time.Since(startTime).Milliseconds(),
+        }
+        
+        if err != nil {
+            eventType = types.EventTypeMessageFailed
+            eventData["error"] = err.Error()
+            log.Printf("Message processing failed for agent %s: %v", rtaExec.agent.ID, err)
+        } else {
+            eventType = types.EventTypeMessageProcessed
+        }
+        
+        recordEvent := &types.Event{
+            ID:        generateID(),
+            Type:      eventType,
+            Source:    "orchestrator",
+            Timestamp: time.Now(),
+            Data:      eventData,
+        }
+        _ = o.stateManager.RecordEvent(ctx, recordEvent)
+        
+        return err
+    }
+}
+
+// monitorRealTimeAgents monitors the health of real-time agents
+func (o *Orchestrator) monitorRealTimeAgents() {
+    ticker := time.NewTicker(30 * time.Second)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-o.ctx.Done():
+            return
+        case <-ticker.C:
+            o.checkRealTimeAgentHealth()
+        }
+    }
+}
+
+// checkRealTimeAgentHealth checks the health of all real-time agents
+func (o *Orchestrator) checkRealTimeAgentHealth() {
+    ctx := context.Background()
+    
+    o.rtaMu.RLock()
+    agentsCopy := make(map[string]*realTimeAgentExecution)
+    for id, exec := range o.realTimeAgents {
+        agentsCopy[id] = exec
+    }
+    o.rtaMu.RUnlock()
+    
+    for agentID, rtaExec := range agentsCopy {
+        rtaExec.mu.RLock()
+        status := rtaExec.status
+        rtaExec.mu.RUnlock()
+        
+        if status != types.AgentStatusRunning {
+            continue
+        }
+        
+        // Check agent status from runtime
+        runtimeStatus, err := o.runtime.GetAgentStatus(ctx, agentID)
+        if err != nil {
+            log.Printf("Health check failed for real-time agent %s: %v", agentID, err)
+            
+            rtaExec.mu.Lock()
+            rtaExec.status = types.AgentStatusFailed
+            rtaExec.agent.Status = types.AgentStatusFailed
+            rtaExec.agent.Error = fmt.Sprintf("health check failed: %v", err)
+            rtaExec.mu.Unlock()
+            
+            _ = o.stateManager.UpdateAgent(ctx, rtaExec.agent)
+            
+            // Record health check failure
+            event := &types.Event{
+                ID:        generateID(),
+                Type:      types.EventTypeAgentHealthCheckFailed,
+                Source:    "orchestrator",
+                Timestamp: time.Now(),
+                Data: map[string]interface{}{
+                    "agent_id": agentID,
+                    "error":    err.Error(),
+                    "type":     "realtime",
+                },
+            }
+            _ = o.stateManager.RecordEvent(ctx, event)
+            continue
+        }
+        
+        // Check if status has changed
+        if runtimeStatus.Status != rtaExec.agent.Status {
+            previousStatus := rtaExec.agent.Status
+            
+            rtaExec.mu.Lock()
+            rtaExec.status = runtimeStatus.Status
+            rtaExec.agent.Status = runtimeStatus.Status
+            rtaExec.agent.Error = runtimeStatus.Error
+            if runtimeStatus.CompletedAt != nil {
+                rtaExec.agent.CompletedAt = runtimeStatus.CompletedAt
+            }
+            rtaExec.mu.Unlock()
+            
+            _ = o.stateManager.UpdateAgent(ctx, rtaExec.agent)
+            
+            // Record status change
+            event := &types.Event{
+                ID:        generateID(),
+                Type:      types.EventTypeAgentStatusChanged,
+                Source:    "orchestrator",
+                Timestamp: time.Now(),
+                Data: map[string]interface{}{
+                    "agent_id":        agentID,
+                    "previous_status": previousStatus,
+                    "new_status":      runtimeStatus.Status,
+                    "type":            "realtime",
+                },
+            }
+            _ = o.stateManager.RecordEvent(ctx, event)
+            
+            // Handle specific status changes
+            switch runtimeStatus.Status {
+            case types.AgentStatusFailed, types.AgentStatusTerminated:
+                log.Printf("Real-time agent %s has failed or terminated: %s", agentID, runtimeStatus.Error)
+                // Stop consumer if it's still running
+                if rtaExec.consumer != nil {
+                    _ = rtaExec.consumer.Stop()
+                }
+                rtaExec.cancel()
+            }
+        }
+        
+        // Record successful health check
+        event := &types.Event{
+            ID:        generateID(),
+            Type:      types.EventTypeAgentHealthChecked,
+            Source:    "orchestrator",
+            Timestamp: time.Now(),
+            Data: map[string]interface{}{
+                "agent_id": agentID,
+                "status":   runtimeStatus.Status,
+                "type":     "realtime",
+            },
+        }
+        _ = o.stateManager.RecordEvent(ctx, event)
+    }
+}
 
 // generateID generates a unique ID for events and other entities
 func generateID() string {

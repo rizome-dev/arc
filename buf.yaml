@@ -1,0 +1,12 @@
+version: v2
+modules:
+  - path: .
+deps:
+  - buf.build/googleapis/googleapis
+  - buf.build/grpc-ecosystem/grpc-gateway
+breaking:
+  use:
+    - FILE
+linting:
+  use:
+    - STANDARD

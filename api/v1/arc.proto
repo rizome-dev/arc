@@ -1,0 +1,550 @@
+syntax = "proto3";
+
+package arc.v1;
+
+option go_package = "github.com/rizome-dev/arc/api/v1;arcv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/api/annotations.proto";
+
+// ARC service provides orchestration of agents and workflows
+service ARC {
+    // Workflow operations
+    rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/workflows"
+            body: "workflow"
+        };
+    }
+    
+    rpc StartWorkflow(StartWorkflowRequest) returns (StartWorkflowResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/workflows/{workflow_id}/start"
+        };
+    }
+    
+    rpc StopWorkflow(StopWorkflowRequest) returns (StopWorkflowResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/workflows/{workflow_id}/stop"
+        };
+    }
+    
+    rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse) {
+        option (google.api.http) = {
+            get: "/api/v1/workflows/{workflow_id}"
+        };
+    }
+    
+    rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse) {
+        option (google.api.http) = {
+            get: "/api/v1/workflows"
+        };
+    }
+    
+    // Real-time agent operations
+    rpc CreateRealTimeAgent(CreateRealTimeAgentRequest) returns (CreateRealTimeAgentResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/agents"
+            body: "config"
+        };
+    }
+    
+    rpc StartRealTimeAgent(StartRealTimeAgentRequest) returns (StartRealTimeAgentResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/agents/{agent_id}/start"
+        };
+    }
+    
+    rpc StopRealTimeAgent(StopRealTimeAgentRequest) returns (StopRealTimeAgentResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/agents/{agent_id}/stop"
+        };
+    }
+    
+    rpc PauseRealTimeAgent(PauseRealTimeAgentRequest) returns (PauseRealTimeAgentResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/agents/{agent_id}/pause"
+        };
+    }
+    
+    rpc ResumeRealTimeAgent(ResumeRealTimeAgentRequest) returns (ResumeRealTimeAgentResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/agents/{agent_id}/resume"
+        };
+    }
+    
+    rpc GetRealTimeAgent(GetRealTimeAgentRequest) returns (GetRealTimeAgentResponse) {
+        option (google.api.http) = {
+            get: "/api/v1/agents/{agent_id}"
+        };
+    }
+    
+    rpc ListRealTimeAgents(ListRealTimeAgentsRequest) returns (ListRealTimeAgentsResponse) {
+        option (google.api.http) = {
+            get: "/api/v1/agents"
+        };
+    }
+    
+    // Agent management
+    rpc GetAgentStatus(GetAgentStatusRequest) returns (GetAgentStatusResponse) {
+        option (google.api.http) = {
+            get: "/api/v1/agents/{agent_id}/status"
+        };
+    }
+    
+    rpc GetAgentLogs(GetAgentLogsRequest) returns (GetAgentLogsResponse) {
+        option (google.api.http) = {
+            get: "/api/v1/agents/{agent_id}/logs"
+        };
+    }
+    
+    rpc StreamAgentLogs(StreamAgentLogsRequest) returns (stream LogEntry) {
+        option (google.api.http) = {
+            get: "/api/v1/agents/{agent_id}/logs/stream"
+        };
+    }
+    
+    // Message queue operations
+    rpc SendMessage(SendMessageRequest) returns (SendMessageResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/messages/send"
+            body: "*"
+        };
+    }
+    
+    rpc PublishTask(PublishTaskRequest) returns (PublishTaskResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/tasks/publish"
+            body: "*"
+        };
+    }
+    
+    rpc GetQueueStats(GetQueueStatsRequest) returns (GetQueueStatsResponse) {
+        option (google.api.http) = {
+            get: "/api/v1/queues/{queue_name}/stats"
+        };
+    }
+    
+    rpc ListQueues(ListQueuesRequest) returns (ListQueuesResponse) {
+        option (google.api.http) = {
+            get: "/api/v1/queues"
+        };
+    }
+    
+    // Event streaming
+    rpc StreamEvents(StreamEventsRequest) returns (stream Event) {
+        option (google.api.http) = {
+            get: "/api/v1/events/stream"
+        };
+    }
+    
+    // External AMQ management
+    rpc RegisterExternalAMQ(RegisterExternalAMQRequest) returns (RegisterExternalAMQResponse) {
+        option (google.api.http) = {
+            post: "/api/v1/external-amq"
+            body: "config"
+        };
+    }
+    
+    // Health and readiness
+    rpc Health(google.protobuf.Empty) returns (HealthResponse) {
+        option (google.api.http) = {
+            get: "/health"
+        };
+    }
+    
+    rpc Ready(google.protobuf.Empty) returns (ReadyResponse) {
+        option (google.api.http) = {
+            get: "/ready"
+        };
+    }
+}
+
+// Agent status enum
+enum AgentStatus {
+    AGENT_STATUS_UNSPECIFIED = 0;
+    AGENT_STATUS_PENDING = 1;
+    AGENT_STATUS_CREATING = 2;
+    AGENT_STATUS_RUNNING = 3;
+    AGENT_STATUS_COMPLETED = 4;
+    AGENT_STATUS_FAILED = 5;
+    AGENT_STATUS_TERMINATED = 6;
+}
+
+// Workflow status enum
+enum WorkflowStatus {
+    WORKFLOW_STATUS_UNSPECIFIED = 0;
+    WORKFLOW_STATUS_PENDING = 1;
+    WORKFLOW_STATUS_RUNNING = 2;
+    WORKFLOW_STATUS_COMPLETED = 3;
+    WORKFLOW_STATUS_FAILED = 4;
+    WORKFLOW_STATUS_CANCELLED = 5;
+}
+
+// Task status enum
+enum TaskStatus {
+    TASK_STATUS_UNSPECIFIED = 0;
+    TASK_STATUS_PENDING = 1;
+    TASK_STATUS_RUNNING = 2;
+    TASK_STATUS_COMPLETED = 3;
+    TASK_STATUS_FAILED = 4;
+    TASK_STATUS_SKIPPED = 5;
+}
+
+// Event type enum
+enum EventType {
+    EVENT_TYPE_UNSPECIFIED = 0;
+    EVENT_TYPE_AGENT_CREATED = 1;
+    EVENT_TYPE_AGENT_STARTED = 2;
+    EVENT_TYPE_AGENT_COMPLETED = 3;
+    EVENT_TYPE_AGENT_FAILED = 4;
+    EVENT_TYPE_AGENT_HEALTH_CHECKED = 5;
+    EVENT_TYPE_AGENT_HEALTH_CHECK_FAILED = 6;
+    EVENT_TYPE_AGENT_STATUS_CHANGED = 7;
+    EVENT_TYPE_WORKFLOW_STARTED = 8;
+    EVENT_TYPE_WORKFLOW_COMPLETED = 9;
+    EVENT_TYPE_WORKFLOW_FAILED = 10;
+    EVENT_TYPE_TASK_STARTED = 11;
+    EVENT_TYPE_TASK_COMPLETED = 12;
+    EVENT_TYPE_TASK_FAILED = 13;
+    EVENT_TYPE_TASK_RETRYING = 14;
+    EVENT_TYPE_MESSAGE_RECEIVED = 15;
+    EVENT_TYPE_MESSAGE_PROCESSED = 16;
+    EVENT_TYPE_MESSAGE_FAILED = 17;
+}
+
+// Core types
+message Agent {
+    string id = 1;
+    string name = 2;
+    string image = 3;
+    AgentStatus status = 4;
+    AgentConfig config = 5;
+    google.protobuf.Timestamp created_at = 6;
+    google.protobuf.Timestamp started_at = 7;
+    google.protobuf.Timestamp completed_at = 8;
+    string error = 9;
+    string container_id = 10;
+    string namespace = 11;
+    map<string, string> labels = 12;
+    map<string, string> annotations = 13;
+}
+
+message AgentConfig {
+    string image = 1;
+    map<string, string> environment = 2;
+    repeated string command = 3;
+    repeated string args = 4;
+    ResourceRequirements resources = 5;
+    MessageQueueConfig message_queue = 6;
+    repeated VolumeMount volumes = 7;
+    string working_dir = 8;
+}
+
+message ResourceRequirements {
+    string cpu = 1;
+    string memory = 2;
+    string gpu = 3;
+}
+
+message VolumeMount {
+    string name = 1;
+    string mount_path = 2;
+    bool read_only = 3;
+}
+
+message MessageQueueConfig {
+    repeated string topics = 1;
+    repeated string brokers = 2;
+    string credentials = 3;
+}
+
+message Workflow {
+    string id = 1;
+    string name = 2;
+    string description = 3;
+    WorkflowStatus status = 4;
+    repeated Task tasks = 5;
+    google.protobuf.Timestamp created_at = 6;
+    google.protobuf.Timestamp started_at = 7;
+    google.protobuf.Timestamp completed_at = 8;
+    string error = 9;
+    map<string, string> metadata = 10;
+}
+
+message Task {
+    string id = 1;
+    string name = 2;
+    string agent_id = 3;
+    TaskStatus status = 4;
+    repeated string dependencies = 5;
+    AgentConfig agent_config = 6;
+    int32 retry_count = 7;
+    int32 max_retries = 8;
+    google.protobuf.Duration timeout = 9;
+    google.protobuf.Timestamp started_at = 10;
+    google.protobuf.Timestamp completed_at = 11;
+    string error = 12;
+    map<string, string> context = 13;
+}
+
+message Event {
+    string id = 1;
+    EventType type = 2;
+    string source = 3;
+    google.protobuf.Timestamp timestamp = 4;
+    map<string, string> data = 5;
+}
+
+message Message {
+    string id = 1;
+    string topic = 2;
+    string from = 3;
+    string to = 4;
+    string type = 5;
+    map<string, string> payload = 6;
+    int64 timestamp = 7;
+}
+
+message ExternalAMQConfig {
+    string name = 1;
+    repeated string endpoints = 2;
+    map<string, string> config = 3;
+}
+
+message RealTimeAgentConfig {
+    Agent agent = 1;
+    repeated string topics = 2;
+    ExternalAMQConfig external_amq = 3;
+}
+
+message LogEntry {
+    google.protobuf.Timestamp timestamp = 1;
+    string level = 2;
+    string message = 3;
+    map<string, string> fields = 4;
+}
+
+message QueueStats {
+    string name = 1;
+    int64 total_messages = 2;
+    int64 pending_messages = 3;
+    int64 processing_messages = 4;
+    int64 consumers = 5;
+    google.protobuf.Timestamp last_activity = 6;
+}
+
+message Queue {
+    string name = 1;
+    string type = 2;
+    google.protobuf.Timestamp created_at = 3;
+    QueueStats stats = 4;
+}
+
+// Request/Response messages
+
+// Workflow operations
+message CreateWorkflowRequest {
+    Workflow workflow = 1;
+}
+
+message CreateWorkflowResponse {
+    string workflow_id = 1;
+    string message = 2;
+}
+
+message StartWorkflowRequest {
+    string workflow_id = 1;
+}
+
+message StartWorkflowResponse {
+    string message = 1;
+}
+
+message StopWorkflowRequest {
+    string workflow_id = 1;
+}
+
+message StopWorkflowResponse {
+    string message = 1;
+}
+
+message GetWorkflowRequest {
+    string workflow_id = 1;
+}
+
+message GetWorkflowResponse {
+    Workflow workflow = 1;
+}
+
+message ListWorkflowsRequest {
+    map<string, string> filter = 1;
+    int32 page_size = 2;
+    string page_token = 3;
+}
+
+message ListWorkflowsResponse {
+    repeated Workflow workflows = 1;
+    string next_page_token = 2;
+}
+
+// Real-time agent operations
+message CreateRealTimeAgentRequest {
+    RealTimeAgentConfig config = 1;
+}
+
+message CreateRealTimeAgentResponse {
+    string agent_id = 1;
+    string message = 2;
+}
+
+message StartRealTimeAgentRequest {
+    string agent_id = 1;
+}
+
+message StartRealTimeAgentResponse {
+    string message = 1;
+}
+
+message StopRealTimeAgentRequest {
+    string agent_id = 1;
+}
+
+message StopRealTimeAgentResponse {
+    string message = 1;
+}
+
+message PauseRealTimeAgentRequest {
+    string agent_id = 1;
+}
+
+message PauseRealTimeAgentResponse {
+    string message = 1;
+}
+
+message ResumeRealTimeAgentRequest {
+    string agent_id = 1;
+}
+
+message ResumeRealTimeAgentResponse {
+    string message = 1;
+}
+
+message GetRealTimeAgentRequest {
+    string agent_id = 1;
+}
+
+message GetRealTimeAgentResponse {
+    Agent agent = 1;
+}
+
+message ListRealTimeAgentsRequest {
+    int32 page_size = 1;
+    string page_token = 2;
+}
+
+message ListRealTimeAgentsResponse {
+    repeated Agent agents = 1;
+    string next_page_token = 2;
+}
+
+// Agent management
+message GetAgentStatusRequest {
+    string agent_id = 1;
+}
+
+message GetAgentStatusResponse {
+    AgentStatus status = 1;
+    string error = 2;
+    google.protobuf.Timestamp started_at = 3;
+    google.protobuf.Timestamp completed_at = 4;
+}
+
+message GetAgentLogsRequest {
+    string agent_id = 1;
+    int32 tail_lines = 2;
+    google.protobuf.Timestamp since = 3;
+    bool follow = 4;
+}
+
+message GetAgentLogsResponse {
+    repeated LogEntry logs = 1;
+}
+
+message StreamAgentLogsRequest {
+    string agent_id = 1;
+    google.protobuf.Timestamp since = 2;
+}
+
+// Message queue operations
+message SendMessageRequest {
+    string from = 1;
+    string to = 2;
+    Message message = 3;
+}
+
+message SendMessageResponse {
+    string message_id = 1;
+    string status = 2;
+}
+
+message PublishTaskRequest {
+    string from = 1;
+    string topic = 2;
+    Message message = 3;
+}
+
+message PublishTaskResponse {
+    string message_id = 1;
+    string status = 2;
+}
+
+message GetQueueStatsRequest {
+    string queue_name = 1;
+}
+
+message GetQueueStatsResponse {
+    QueueStats stats = 1;
+}
+
+message ListQueuesRequest {
+    int32 page_size = 1;
+    string page_token = 2;
+}
+
+message ListQueuesResponse {
+    repeated Queue queues = 1;
+    string next_page_token = 2;
+}
+
+// Event streaming
+message StreamEventsRequest {
+    repeated EventType event_types = 1;
+    string agent_id = 2;
+    string workflow_id = 3;
+    google.protobuf.Timestamp since = 4;
+}
+
+// External AMQ management
+message RegisterExternalAMQRequest {
+    ExternalAMQConfig config = 1;
+}
+
+message RegisterExternalAMQResponse {
+    string message = 1;
+}
+
+// Health and readiness
+message HealthResponse {
+    string status = 1;
+    map<string, string> checks = 2;
+    google.protobuf.Timestamp timestamp = 3;
+}
+
+message ReadyResponse {
+    bool ready = 1;
+    repeated string services = 2;
+    google.protobuf.Timestamp timestamp = 3;
+}
